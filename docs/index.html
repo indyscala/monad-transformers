@@ -25,56 +25,550 @@
 class: center, middle
 
 # Monad Transformers
-Ross A. Baker • `@JulienTruffaut`
-
-???
-- notes here
-- see https://remarkjs.com/#1
+Ross A. Baker • `@rossabaker`
 
 ---
-# Inline Scala examples
+# Option[_]
+
+Databases don't have everything.
 
 ```scala
-case class Person(name: String, age: Int)
+case class Number(id: Long, name: String)
+def findById(id: Long): Option[Number] = Map(42L -> Number(42, "forty-two")).get(id)
+```
+
+--
+
+```scala
+val fortyTwo = findById(42L)
+// fortyTwo: Option[Number] = Some(Number(42,forty-two))
+
+val fortyThree = findById(43L)
+// fortyThree: Option[Number] = None
+```
+
+--
+
+```scala
+def render(n: Number): String = s"${n.id}'s name is ${n.name}"
+def bedazzle(s: String): String = s"✨✨ ${s} ✨✨"
 ```
 
 ```scala
-val john = Person("John", 23)
-// john: Person = Person(John,23)
-
-john.age
-// res0: Int = 23
-
-john.copy(age = 30)
-// res1: Person = Person(John,30)
+fortyTwo.map(render).map(bedazzle)
+// res0: Option[String] = Some(✨✨ 42's name is forty-two ✨✨)
 ```
-
-???
-- see https://github.com/tpolecat/tut
 
 ---
-# Scala examples from core module
+# Future[_]
+
+Network calls scale better when they're asynchronous.
 
 ```scala
-import org.indyscala.mt.Foo.{FooInt, FooString}
+import scala.concurrent._
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.Try
+import scala.concurrent.duration._
+def findById(id: Long): Future[Number] = Future.fromTry(Try(Map(42L -> Number(42, "forty-two"))(id)))
+```
+
+--
+
+```scala
+val fortyTwo = findById(42L)
+// fortyTwo: scala.concurrent.Future[Number] = Future(Success(Number(42,forty-two)))
+
+val fortyThree = findById(43L)
+// fortyThree: scala.concurrent.Future[Number] = Future(Failure(java.util.NoSuchElementException: key not found: 43))
+```
+
+--
+
+```scala
+fortyTwo.map(render).map(bedazzle)
+// res1: scala.concurrent.Future[String] = Future(<not completed>)
+```
+
+---
+# Future[Option[_]]
+
+We should be able to track _optionality_ and _asynchronicity_.
+
+```scala
+def findById(id: Long): Future[Option[Number]] = Future.successful(Map(42L -> Number(42, "forty-two")).get(id))
+```
+
+--
+
+```scala
+val fortyTwo = findById(42L)
+// fortyTwo: scala.concurrent.Future[Option[Number]] = Future(Success(Some(Number(42,forty-two))))
+
+val fortyThree = findById(43L)
+// fortyThree: scala.concurrent.Future[Option[Number]] = Future(Success(None))
+```
+
+--
+
+```scala
+fortyTwo.map(_.map(render)).map(_.map(bedazzle))
+// res2: scala.concurrent.Future[Option[String]] = Future(<not completed>)
+```
+
+---
+# Nested
+
+```scala
+import cats.data.Nested
+import cats.implicits._
+def findById(id: Long): Nested[Future, Option, Number] = 
+  Nested(Future.successful(Map(42L -> Number(42, "forty-two")).get(id)))
+```
+
+--
+
+```scala
+val fortyTwo = findById(42L)
+// fortyTwo: cats.data.Nested[scala.concurrent.Future,Option,Number] = Nested(Future(Success(Some(Number(42,forty-two)))))
+
+val fortyThree = findById(43L)
+// fortyThree: cats.data.Nested[scala.concurrent.Future,Option,Number] = Nested(Future(Success(None)))
+```
+
+--
+
+```scala
+Nested.catsDataFunctorForNested[Future, Option]
+// res3: cats.Functor[[γ$25$]cats.data.Nested[scala.concurrent.Future,Option,γ$25$]] = cats.data.NestedInstances10$$anon$16@43dd18d9
+
+fortyTwo.map(render).map(bedazzle).value
+// res4: scala.concurrent.Future[Option[String]] = Future(Success(Some(✨✨ 42's name is forty-two ✨✨)))
+```
+
+---
+# Works for all `.map`s!
+
+```scala
+import cats.data.Validated
+val nested: Nested[List, Validated[String, ?], Long] = Nested(List(Validated.Valid(42L)))
 ```
 
 ```scala
-val fooInt = FooInt(5)
-// fooInt: org.indyscala.mt.Foo.FooInt = FooInt(5)
-
-val fooString = FooString("Hello World")
-// fooString: org.indyscala.mt.Foo.FooString = FooString(Hello World)
-
-val foos = List(fooInt, fooString)
-// foos: List[org.indyscala.mt.Foo] = List(FooInt(5), FooString(Hello World))
+nested.map(_.toString).value
+// res5: List[cats.data.Validated[String,String]] = List(Valid(42))
 ```
+
+--
+
+Well, all `Functor`s.
+
+```scala
+scala> val nested: Nested[List, Set, Long] = Nested(List(Set(42L)))
+nested: cats.data.Nested[List,Set,Long] = Nested(List(Set(42)))
+```
+
+```scala
+scala> nested.map(_.toString).value
+<console>:27: error: value map is not a member of cats.data.Nested[List,Set,Long]
+       nested.map(_.toString).value
+              ^
+```
+
+---
+# Doesn't work for `.flatMap`s
+
+```scala
+val fortyTwo = findById(42L)
+// fortyTwo: cats.data.Nested[scala.concurrent.Future,Option,Number] = Nested(Future(Success(Some(Number(42,forty-two)))))
+
+def findNext(n: Number) = findById(n.id + 1)
+// findNext: (n: Number)cats.data.Nested[scala.concurrent.Future,Option,Number]
+```
+
+```scala
+scala> fortyTwo.flatMap(findNext)
+<console>:28: error: value flatMap is not a member of cats.data.Nested[scala.concurrent.Future,Option,Number]
+       fortyTwo.flatMap(findNext)
+                ^
+<console>:28: error: missing argument list for method findNext
+Unapplied methods are only converted to functions when a function type is expected.
+You can make this conversion explicit by writing `findNext _` or `findNext(_)` instead of `findNext`.
+       fortyTwo.flatMap(findNext)
+                        ^
+```
+
+---
+# Functors compose
+
+```scala
+import cats._
+// import cats._
+
+def map[F[_]: Functor, G[_]: Functor, A, B](fga: F[G[A]])(f: A => B): F[G[B]] =
+  fga.map(ga => ga.map(f))
+// map: [F[_], G[_], A, B](fga: F[G[A]])(f: A => B)(implicit evidence$1: cats.Functor[F], implicit evidence$2: cats.Functor[G])F[G[B]]
+```
+
+---
+# Monads don't compose
+
+```scala
+scala> def flatMap[F[_]: Monad, G[_]: Monad, A, B](fga: F[G[A]])(f: A => F[G[B]]): F[G[B]] =
+     |   fga.flatMap(ga => ga.map(f))
+<console>:29: error: type mismatch;
+ found   : G[F[G[B]]]
+ required: F[G[B]]
+         fga.flatMap(ga => ga.map(f))
+                                 ^
+```
+
+--
+
+* We're stuck in `G[F[G[B]]]`
+
+--
+
+* We need to move that `F` to the outside.
+
+--
+
+* We can flatten two `G`s in a row.
+
+---
+# Traverse is always the answer
+
+```scala
+import cats.Traverse
+// import cats.Traverse
+
+def flatMap[F[_]: Monad, G[_]: Traverse: Monad, A, B](fga: F[G[A]])(f: A => F[G[B]]): F[G[B]] = 
+  fga.flatMap(ga => ga.traverse(f).map(_.flatten))
+// flatMap: [F[_], G[_], A, B](fga: F[G[A]])(f: A => F[G[B]])(implicit evidence$1: cats.Monad[F], implicit evidence$2: cats.Traverse[G], implicit evidence$3: cats.Monad[G])F[G[B]]
+```
+
+--
+* `traverse(f)` is `map(f).sequence`
+
+--
+* `sequence`, from `Traverse` flips `G[F[A]]` to `F[G[A]]`
+
+--
+* `flatten`, from `Monad`, turns `G[G[A]]` into `G[A]`
+
+---
+# This is worse than the double maps
+
+```scala
+def findById(id: Long): Future[Option[Number]] = 
+  Future.successful(Map(42L -> Number(42, "forty-two")).get(id))
+def findNext(n: Number): Future[Option[Number]] = 
+  findById(n.id + 1)
+findById(42L).flatMap(_.traverse(findNext).map(_.flatten))
+```
+
+---
+# Can define ad hoc wrappers if the inner monad is traversable
+
+```scala
+case class FutureOption[A](value: Future[Option[A]]) {
+  def flatMap[B](f: A => FutureOption[B]): FutureOption[B] =
+    FutureOption(value.flatMap {
+	  case Some(a) => f(a).value
+	  case None => Future.successful(None)
+    })
+}
+```
+
+--
+
+`FutureOption` could be a `Monad` if we'd define the rest of it.
+
+--
+
+```scala
+scala> def findById(id: Long): FutureOption[Number] = 
+     |   FutureOption(Future.successful(Map(42L -> Number(42, "forty-two")).get(id)))
+findById: (id: Long)FutureOption[Number]
+
+scala> def findNext(n: Number): FutureOption[Number] = 
+     |   findById(n.id + 1)
+findNext: (n: Number)FutureOption[Number]
+
+scala> findById(42L).flatMap(findNext)
+res9: FutureOption[Number] = FutureOption(Future(<not completed>))
+```
+
+---
+# Not all monads are traversable
+
+```scala
+def findById(id: Long): Option[Future[Number]] = 
+  Map(42L -> Number(42, "forty-two")).get(id).map(Future.successful)
+def findNext(n: Number): Option[Future[Number]] = 
+  findById(n.id + 1)
+```
+
+```scala
+scala> findById(42L).flatMap(_.traverse(findNext).map(_.flatten))
+<console>:32: error: value traverse is not a member of scala.concurrent.Future[Number]
+       findById(42L).flatMap(_.traverse(findNext).map(_.flatten))
+                               ^
+<console>:32: error: missing argument list for method findNext
+Unapplied methods are only converted to functions when a function type is expected.
+You can make this conversion explicit by writing `findNext _` or `findNext(_)` instead of `findNext`.
+       findById(42L).flatMap(_.traverse(findNext).map(_.flatten))
+                                        ^
+```
+
+---
+# OptionFuture
+
+```scala
+case class OptionFuture[A](value: Option[Future[A]]) {
+  def flatMap[B](f: A => OptionFuture[B]): OptionFuture[B] =
+    OptionFuture(value.flatMap { future =>
+	  Await.result(future.map(f), Duration.Inf).value
+    })
+}
+```
+
+--
+😱😱😱😱😱
+
+---
+# We hired one of those jerks who likes `IO` better than `Future`
+
+```scala
+import cats.effect.IO
+case class IOOption[A](value: IO[Option[A]]) {
+  def flatMap[B](f: A => IOOption[B]): IOOption[B] =
+    IOOption(value.flatMap {
+	  case Some(a) => f(a).value
+	  case None => IO.pure(None)
+    })
+}
+```
+
+---
+# `OptionT`
+
+```scala
+case class OptionT[F[_]: Monad, A](value: F[Option[A]]) {
+  def flatMap[B](f: A => OptionT[F, B]): OptionT[F, B] =
+    OptionT(value.flatMap {
+	  case Some(a) => f(a).value
+	  case None => Applicative[F].pure(None)
+    })
+}
+```
+
+--
+* `OptionT[F, ?]` is a monad
+
+--
+* `OptionT` is a _monad transformer_
+
+---
+# Monad transformers
+
+--
+* A type constructor that turns a monad into another monad.
+
+--
+* You'll find a lot in `cats.data`.
+
+--
+* In Scala, they look like `F[G[_], A]`.
+
+--
+* `G[_]` is a monad.
+
+--
+* `F[G, ?]` is a monad.
+
+---
+# Usually contains methods like the inner monad
+
+```scala
+import cats.data._
+// import cats.data._
+
+val io = OptionT.fromOption[IO](None).getOrElse(42)
+// io: cats.effect.IO[Int] = <function1>
+
+io.unsafeRunSync()
+// res11: Int = 42
+```
+
+---
+# EitherT
+
+Great for composing error handling with other effects.
+
+```scala
+def findById[F[_]: Applicative](id: Long): EitherT[F, NoSuchElementException, Number] = 
+  Map(42L -> Number(42, "forty-two")).get(id) match {
+	case Some(n) => EitherT.rightT(n)
+	case None => EitherT.leftT(new NoSuchElementException(id.toString))
+  }
+// findById: [F[_]](id: Long)(implicit evidence$1: cats.Applicative[F])cats.data.EitherT[F,NoSuchElementException,Number]
+
+findById[IO](42L).map(render).map(bedazzle).getOrElse("drat")
+// res12: cats.effect.IO[String] = <function1>
+```
+
+---
+# State
+
+```scala
+case class RNG(seed: Long) {
+  def next = RNG(seed * 6364136223846793005L + 1442695040888963407L)
+}
+val nextLong: State[RNG, Long] = State(rng => (rng.next, rng.seed))
+val rollDie: State[RNG, Int] = nextLong.map(math.abs).map(_ % 6).map(_.toInt)
+def rollDice: State[RNG, Int] = for {
+  a <- rollDie
+  b <- rollDie
+} yield a + b
+```
+
+```scala
+val (rng, sum) = rollDice.run(RNG(12L)).value
+// rng: RNG = RNG(-106936673015262178)
+// sum: Int = 3
+
+val (rng, sum) = rollDice.run(RNG(12L)).value
+// rng: RNG = RNG(-106936673015262178)
+// sum: Int = 3
+
+val (_,   sum) = rollDice.run(rng).value
+// sum: Int = 7
+```
+
+---
+# Dice as a service
+
+```scala
+case class RNG(seed: Long) {
+  def next = IO(RNG(seed * 6364136223846793005L + 1442695040888963407L))
+}
+val nextLong: StateT[IO, RNG, Long] = StateT(rng => rng.next.map(_ -> rng.seed))
+val rollDie: StateT[IO, RNG, Int] = nextLong.map(math.abs).map(_ % 6).map(_.toInt)
+def rollDice: StateT[IO, RNG, Int] = for {
+  a <- rollDie
+  b <- rollDie
+} yield a + b
+```
+
+```scala
+val (rng, sum) = rollDice.run(RNG(12L)).unsafeRunSync
+// rng: RNG = RNG(-106936673015262178)
+// sum: Int = 3
+```
+
+---
+# Resource
+
+```scala
+import cats.effect._, java.io._
+def read(file: File): Resource[IO, Reader] =
+  Resource(IO {
+    val in = new FileReader(file)
+    (in, IO(in.close()))
+  })
+  
+def write(file: File): Resource[IO, Writer] =
+  Resource(IO {
+    val out = new FileWriter(file)
+    (out, IO(out.close()))
+  })
+  
+def copy(src: File, dest: File): IO[Unit] =
+  read(src).use { r =>
+    write(dest).use { w =>
+	  // r and w are closed automatically!
+	  ???
+    }
+  }
+```
+
+---
+# ListT
+
+```scala
+case class ListT[F[_], A](value: F[List[A]]) {
+  def flatMap[B](f: A => ListT[F, B])(implicit F: Monad[F]): ListT[F, B] =
+    ListT(value.flatMap(_ match {
+	  case Nil => List.empty[B].pure[F]
+	  case xs => xs.map(f).reduce(_ ++ _).value
+    }))
+  def ++(that: ListT[F, A])(implicit F: Monad[F]) =
+    ListT(value.flatMap { xs =>
+	  println("Ouch, appending lists")
+	  that.value.map(xs ++ _)
+	})
+}
+// defined class ListT
+```
+
+---
+# ListT
+
+```scala
+ListT(Option(List(1, 2, 3))).flatMap(i => ListT(Option(List(i*1, i*2, i*3))))
+// Ouch, appending lists
+// Ouch, appending lists
+// res13: ListT[Option,Int] = ListT(Some(List(1, 2, 3, 2, 4, 6, 3, 6, 9)))
+```
+
+--
+Just because you can doesn't mean you should
+
+---
+# List
+
+```scala
+def f(i: Boolean): ListT[List, Boolean] = i match {
+  case false => ListT(List(List(false, true)))
+  case true  => ListT(List(List(false), List(true)))
+}
+// f: (i: Boolean)ListT[List,Boolean]
+
+val a = (f(false).flatMap(f(_))).flatMap(f)
+// Ouch, appending lists
+// Ouch, appending lists
+// Ouch, appending lists
+// Ouch, appending lists
+// Ouch, appending lists
+// Ouch, appending lists
+// Ouch, appending lists
+// a: ListT[List,Boolean] = ListT(List(List(false, true, false, false, true), List(false, true, true, false, true), List(false, true, false, false), List(false, true, false, true), List(false, true, true, false), List(false, true, true, true)))
+
+val b =  f(false).flatMap(f(_)  .flatMap(f))
+// Ouch, appending lists
+// Ouch, appending lists
+// Ouch, appending lists
+// b: ListT[List,Boolean] = ListT(List(List(false, true, false, false, true), List(false, true, false, false), List(false, true, false, true), List(false, true, true, false, true), List(false, true, true, false), List(false, true, true, true)))
+
+a == b
+// res14: Boolean = false
+```
+
+--
+Not only is it slow, it's not lawful.
+
+---
+# Some other interesting transformers to talk about if I talked too fast
+* `Kleisli` aka `ReaderT`
+* `WriterT`
+* `TraceT`
+* `IndexedReaderWriterStateT`
 
 ---
 class: center, middle
 
 # Thanks!
-Code and slides at `rossabaker/march2019` on GitHub
+Code and slides at `indyscala/march2019` on GitHub
 
 ## Questions?
 
